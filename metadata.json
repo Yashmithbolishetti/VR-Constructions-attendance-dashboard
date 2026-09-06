@@ -1,0 +1,8 @@
+{
+  "name": "VR Constructions — Biometric Attendance Intelligence",
+  "description": "Enterprise-grade biometric attendance intelligence and workforce analytics dashboard for VR Constructions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
