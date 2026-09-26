@@ -433,7 +433,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
 
         // 4. Load overrides
-        const overrides = await DatabaseService.getOverridesForMonth(monthId);
+        const overrides = await DatabaseService.getOverridesForMonth(mKey);
         const newMap = new Map<string, Partial<AttendanceDay>>();
         for (const ov of overrides) {
           const prev = newMap.get(ov.attendance_day_id) || {};
