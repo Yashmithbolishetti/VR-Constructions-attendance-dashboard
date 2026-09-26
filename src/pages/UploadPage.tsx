@@ -40,6 +40,7 @@ import { parseBiometricFile } from '../services/attendanceParser';
 import { LeaveType, ParsedBiometricDataset } from '../types/attendance';
 import { runAttendanceEngineTests, TestResult } from '../services/attendanceTests';
 import { DatabaseService, calculateFileHash } from '../services/database';
+import { getDatesInRange, normalizeDateString, isEnNoMatch } from '../services/attendanceCalculator';
 import { DbBiometricImport } from '../types/database';
 import { DuplicateImportModal } from '../components/import/DuplicateImportModal';
 import { ImportHistoryModal } from '../components/import/ImportHistoryModal';
@@ -75,6 +76,7 @@ export const UploadPage: React.FC = () => {
     addToast,
     isProcessingUpload,
     setIsProcessingUpload,
+    loadMonthDataFromDatabase,
   } = useApp();
 
   const [isDragging, setIsDragging] = useState(false);
@@ -319,24 +321,22 @@ export const UploadPage: React.FC = () => {
 
     const datesToAssign: string[] = [];
     if (leaveDateMode === 'single') {
-      datesToAssign.push(leaveDate);
+      datesToAssign.push(normalizeDateString(leaveDate));
     } else {
       if (!leaveEndDate || leaveEndDate < leaveDate) {
         addToast('Please select a valid End Date that is on or after the Start Date', 'warning');
         return;
       }
-      const cur = new Date(leaveDate);
-      const end = new Date(leaveEndDate);
-      while (cur <= end) {
-        datesToAssign.push(cur.toISOString().substring(0, 10));
-        cur.setDate(cur.getDate() + 1);
-      }
+      const rangeDates = getDatesInRange(normalizeDateString(leaveDate), normalizeDateString(leaveEndDate));
+      datesToAssign.push(...rangeDates);
     }
 
     const newRecords = [];
     for (const dStr of datesToAssign) {
       for (const empId of selectedLeaveEmpIds) {
-        const emp = parsedDataset?.employees.find((x) => x.employeeId === empId);
+        const emp = parsedDataset?.employees.find(
+          (x) => x.employeeId === empId || isEnNoMatch(x.employeeId, empId)
+        );
         newRecords.push({
           id: `leave-${empId}-${dStr}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           employeeId: empId,
@@ -428,9 +428,25 @@ export const UploadPage: React.FC = () => {
     );
   }, [calculatedData?.employeeSummaries, summarySearchQuery]);
 
-  // Filter holidays and leaves for active month
-  const currentMonthHolidays = holidays.filter((h) => h.date.startsWith(selectedMonthKey));
-  const currentMonthLeaves = leaves.filter((l) => l.date.startsWith(selectedMonthKey));
+  // Filter holidays and leaves for active month with date normalization (Requirement #3, #5)
+  const isOverallOrEmpty =
+    !selectedMonthKey ||
+    selectedMonthKey === 'OVERALL' ||
+    selectedMonthKey === 'Overall' ||
+    selectedMonthKey === 'ALL' ||
+    selectedMonthKey === 'COMBINED';
+
+  const currentMonthHolidays = holidays.filter((h) => {
+    if (isOverallOrEmpty) return true;
+    const norm = normalizeDateString(h.date);
+    return norm.startsWith(selectedMonthKey);
+  });
+
+  const currentMonthLeaves = leaves.filter((l) => {
+    if (isOverallOrEmpty) return true;
+    const norm = normalizeDateString(l.date);
+    return norm.startsWith(selectedMonthKey);
+  });
 
   const steps = [
     { num: 1, label: 'Upload' },
@@ -1898,6 +1914,12 @@ export const UploadPage: React.FC = () => {
           setSelectedMonthKey(mKey);
           setCurrentPage('overview');
           addToast(`Loaded workspace for ${imp.file_name} (${mKey})`, 'success');
+        }}
+        onImportDeleted={async () => {
+          addToast('Import record and associated data removed successfully', 'success');
+          if (activeMonthKey) {
+            await loadMonthDataFromDatabase(activeMonthKey);
+          }
         }}
       />
 

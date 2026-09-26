@@ -21,6 +21,7 @@ import {
   DbAttendanceException,
   DbAttendanceOverride,
 } from '../types/database';
+import { normalizeDateString } from './attendanceCalculator';
 
 const DB_NAME = 'vr_constructions_biometric_db_v3';
 const DB_VERSION = 1;
@@ -131,9 +132,9 @@ class MemoryDatabase {
   }
 
   async ensureHydrated(): Promise<void> {
-    if (this.isHydrated && this.months.size > 0) return;
+    if (this.isHydrated && this.months.size > 0 && this.leaves.size > 0) return;
     this.hydrateFromStorage();
-    if (this.months.size === 0 && typeof window !== 'undefined' && window.indexedDB) {
+    if (typeof window !== 'undefined' && window.indexedDB) {
       try {
         const [idbMonths, idbEmps, idbImports, idbHols, idbLeaves, idbDays, idbExcs] = await Promise.all([
           readFromIDB<DbAttendanceMonth>('attendance_months'),
@@ -145,13 +146,13 @@ class MemoryDatabase {
           readFromIDB<DbAttendanceException>('attendance_exceptions'),
         ]);
 
-        if (idbMonths && idbMonths.length > 0) idbMonths.forEach((m) => this.months.set(m.id, m));
-        if (idbEmps && idbEmps.length > 0) idbEmps.forEach((e) => this.employees.set(e.employee_code, e));
-        if (idbImports && idbImports.length > 0) idbImports.forEach((i) => this.imports.set(i.id, i));
-        if (idbHols && idbHols.length > 0) idbHols.forEach((h) => this.holidays.set(h.id, h));
-        if (idbLeaves && idbLeaves.length > 0) idbLeaves.forEach((l) => this.leaves.set(l.id, l));
-        if (idbDays && idbDays.length > 0) idbDays.forEach((d) => this.attendanceDays.set(d.id, d));
-        if (idbExcs && idbExcs.length > 0) idbExcs.forEach((ex) => this.exceptions.set(ex.id, ex));
+        if (idbMonths && idbMonths.length > 0) idbMonths.forEach((m) => { if (!this.months.has(m.id)) this.months.set(m.id, m); });
+        if (idbEmps && idbEmps.length > 0) idbEmps.forEach((e) => { if (!this.employees.has(e.employee_code)) this.employees.set(e.employee_code, e); });
+        if (idbImports && idbImports.length > 0) idbImports.forEach((i) => { if (!this.imports.has(i.id)) this.imports.set(i.id, i); });
+        if (idbHols && idbHols.length > 0) idbHols.forEach((h) => { if (!this.holidays.has(h.id)) this.holidays.set(h.id, h); });
+        if (idbLeaves && idbLeaves.length > 0) idbLeaves.forEach((l) => { if (!this.leaves.has(l.id)) this.leaves.set(l.id, l); });
+        if (idbDays && idbDays.length > 0) idbDays.forEach((d) => { if (!this.attendanceDays.has(d.id)) this.attendanceDays.set(d.id, d); });
+        if (idbExcs && idbExcs.length > 0) idbExcs.forEach((ex) => { if (!this.exceptions.has(ex.id)) this.exceptions.set(ex.id, ex); });
       } catch (err) {
         console.warn('IDB hydration error fallback:', err);
       }
@@ -351,14 +352,60 @@ export const DatabaseService = {
    * Delete an import and its punches
    */
   async deleteImport(id: string): Promise<void> {
+    const targetImp = memoryDb.imports.get(id);
     memoryDb.imports.delete(id);
+
     // Remove punches associated with this import
     for (const [punchId, punch] of memoryDb.punches.entries()) {
       if (punch.import_id === id) {
         memoryDb.punches.delete(punchId);
       }
     }
+
+    // If no other import remains for this month, clean up cached attendance days and exceptions
+    if (targetImp && targetImp.date_from) {
+      const monthKey = targetImp.date_from.substring(0, 7);
+      const otherImportsForMonth = Array.from(memoryDb.imports.values()).some(
+        (imp) => imp.date_from && imp.date_from.startsWith(monthKey)
+      );
+      if (!otherImportsForMonth && monthKey) {
+        for (const [dayId, day] of memoryDb.attendanceDays.entries()) {
+          if (day.attendance_month_id === `month-${monthKey}` || (day.attendance_date && day.attendance_date.startsWith(monthKey))) {
+            memoryDb.attendanceDays.delete(dayId);
+          }
+        }
+        for (const [exId, ex] of memoryDb.exceptions.entries()) {
+          if (ex.attendance_month_id === `month-${monthKey}` || (ex.attendance_date && ex.attendance_date.startsWith(monthKey))) {
+            memoryDb.exceptions.delete(exId);
+          }
+        }
+        memoryDb.months.delete(`month-${monthKey}`);
+      }
+    }
+
     memoryDb.saveToStorage();
+
+    try {
+      if (typeof window !== 'undefined' && window.indexedDB) {
+        const db = await openIDB();
+        const tx = db.transaction(['biometric_imports', 'biometric_punches'], 'readwrite');
+        tx.objectStore('biometric_imports').delete(id);
+        const punchStore = tx.objectStore('biometric_punches');
+        if (punchStore.indexNames.contains('import_id')) {
+          const index = punchStore.index('import_id');
+          const req = index.openCursor(IDBKeyRange.only(id));
+          req.onsuccess = (e: any) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              cursor.delete();
+              cursor.continue();
+            }
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('IDB deletion fallback:', err);
+    }
   },
 
   /**
@@ -453,20 +500,49 @@ export const DatabaseService = {
   },
 
   /**
+   * Get all holidays across all months
+   */
+  async getAllHolidays(): Promise<DbHoliday[]> {
+    await memoryDb.ensureHydrated();
+    if (memoryDb.holidays.size === 0 && typeof window !== 'undefined' && window.indexedDB) {
+      try {
+        const idbHols = await readFromIDB<DbHoliday>('holidays');
+        if (idbHols && idbHols.length > 0) {
+          idbHols.forEach((h) => memoryDb.holidays.set(h.id, h));
+        }
+      } catch (err) {
+        console.warn('Failed reading holidays from IDB', err);
+      }
+    }
+    return Array.from(memoryDb.holidays.values()).sort((a, b) =>
+      a.holiday_date.localeCompare(b.holiday_date)
+    );
+  },
+
+  /**
    * Get holidays configured for a specific month
    */
   async getHolidaysForMonth(monthId: string): Promise<DbHoliday[]> {
     await memoryDb.ensureHydrated();
-    const cleanKey = monthId ? monthId.replace(/^month-/, '') : '';
-    const isAll = !cleanKey || cleanKey === 'ALL' || cleanKey === 'COMBINED' || cleanKey === 'YEARLY';
+    const cleanKey = monthId ? monthId.replace(/^month-/, '').trim() : '';
+    const isAll =
+      !cleanKey ||
+      cleanKey === 'ALL' ||
+      cleanKey === 'COMBINED' ||
+      cleanKey === 'YEARLY' ||
+      cleanKey === 'OVERALL' ||
+      cleanKey.toLowerCase() === 'all' ||
+      cleanKey.toLowerCase() === 'overall';
     return Array.from(memoryDb.holidays.values())
-      .filter((h) =>
-        isAll
-          ? true
-          : h.attendance_month_id === monthId ||
-            h.attendance_month_id === cleanKey ||
-            h.holiday_date.startsWith(cleanKey)
-      )
+      .filter((h) => {
+        if (isAll) return true;
+        const norm = normalizeDateString(h.holiday_date);
+        return (
+          h.attendance_month_id === monthId ||
+          h.attendance_month_id === cleanKey ||
+          norm.startsWith(cleanKey)
+        );
+      })
       .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
   },
 
@@ -497,20 +573,49 @@ export const DatabaseService = {
   },
 
   /**
+   * Get all leave records across all recorded months
+   */
+  async getAllLeaves(): Promise<DbLeaveRecord[]> {
+    await memoryDb.ensureHydrated();
+    if (memoryDb.leaves.size === 0 && typeof window !== 'undefined' && window.indexedDB) {
+      try {
+        const idbLeaves = await readFromIDB<DbLeaveRecord>('leave_records');
+        if (idbLeaves && idbLeaves.length > 0) {
+          idbLeaves.forEach((l) => memoryDb.leaves.set(l.id, l));
+        }
+      } catch (err) {
+        console.warn('Failed reading leaves from IDB', err);
+      }
+    }
+    return Array.from(memoryDb.leaves.values()).sort((a, b) =>
+      a.leave_date.localeCompare(b.leave_date)
+    );
+  },
+
+  /**
    * Get leave records for a specific month
    */
   async getLeavesForMonth(monthId: string): Promise<DbLeaveRecord[]> {
     await memoryDb.ensureHydrated();
-    const cleanKey = monthId ? monthId.replace(/^month-/, '') : '';
-    const isAll = !cleanKey || cleanKey === 'ALL' || cleanKey === 'COMBINED' || cleanKey === 'YEARLY';
+    const cleanKey = monthId ? monthId.replace(/^month-/, '').trim() : '';
+    const isAll =
+      !cleanKey ||
+      cleanKey === 'ALL' ||
+      cleanKey === 'COMBINED' ||
+      cleanKey === 'YEARLY' ||
+      cleanKey === 'OVERALL' ||
+      cleanKey.toLowerCase() === 'all' ||
+      cleanKey.toLowerCase() === 'overall';
     return Array.from(memoryDb.leaves.values())
-      .filter((l) =>
-        isAll
-          ? true
-          : l.attendance_month_id === monthId ||
-            l.attendance_month_id === cleanKey ||
-            l.leave_date.startsWith(cleanKey)
-      )
+      .filter((l) => {
+        if (isAll) return true;
+        const norm = normalizeDateString(l.leave_date);
+        return (
+          l.attendance_month_id === monthId ||
+          l.attendance_month_id === cleanKey ||
+          norm.startsWith(cleanKey)
+        );
+      })
       .sort((a, b) => a.leave_date.localeCompare(b.leave_date));
   },
 
@@ -549,9 +654,16 @@ export const DatabaseService = {
    */
   async getAttendanceDaysForMonth(monthIdOrKey: string): Promise<DbAttendanceDay[]> {
     await memoryDb.ensureHydrated();
-    const cleanKey = monthIdOrKey ? monthIdOrKey.replace(/^month-/, '') : '';
+    const cleanKey = monthIdOrKey ? monthIdOrKey.replace(/^month-/, '').trim() : '';
     const fullId = `month-${cleanKey}`;
-    const isCombined = cleanKey === 'ALL' || cleanKey === 'COMBINED' || cleanKey === 'YEARLY' || !cleanKey;
+    const isCombined =
+      !cleanKey ||
+      cleanKey === 'ALL' ||
+      cleanKey === 'COMBINED' ||
+      cleanKey === 'YEARLY' ||
+      cleanKey === 'OVERALL' ||
+      cleanKey.toLowerCase() === 'all' ||
+      cleanKey.toLowerCase() === 'overall';
 
     let days = Array.from(memoryDb.attendanceDays.values())
       .filter((d) =>
@@ -793,8 +905,15 @@ export const DatabaseService = {
 
   async getOverridesForMonth(monthId: string): Promise<DbAttendanceOverride[]> {
     await memoryDb.ensureHydrated();
-    const cleanKey = monthId ? monthId.replace(/^month-/, '') : '';
-    const isAll = !cleanKey || cleanKey === 'ALL' || cleanKey === 'COMBINED' || cleanKey === 'YEARLY';
+    const cleanKey = monthId ? monthId.replace(/^month-/, '').trim() : '';
+    const isAll =
+      !cleanKey ||
+      cleanKey === 'ALL' ||
+      cleanKey === 'COMBINED' ||
+      cleanKey === 'YEARLY' ||
+      cleanKey === 'OVERALL' ||
+      cleanKey.toLowerCase() === 'all' ||
+      cleanKey.toLowerCase() === 'overall';
     return Array.from(memoryDb.overrides.values())
       .filter((o) =>
         isAll

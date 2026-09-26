@@ -22,6 +22,7 @@ export interface ImportHistoryModalProps {
   onClose: () => void;
   onSelectImportMonth?: (monthKey: string) => void;
   onSelectImport?: (imp: DbBiometricImport) => void;
+  onImportDeleted?: (id: string) => void;
 }
 
 export const ImportHistoryModal: React.FC<ImportHistoryModalProps> = ({
@@ -29,10 +30,12 @@ export const ImportHistoryModal: React.FC<ImportHistoryModalProps> = ({
   onClose,
   onSelectImportMonth,
   onSelectImport,
+  onImportDeleted,
 }) => {
   const [imports, setImports] = useState<DbBiometricImport[]>([]);
   const [selectedImport, setSelectedImport] = useState<DbBiometricImport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -47,14 +50,25 @@ export const ImportHistoryModal: React.FC<ImportHistoryModalProps> = ({
     setIsLoading(false);
   };
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (confirm('Are you sure you want to remove this import history record?')) {
+  const handleDelete = async (id: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setDeletingId(id);
+    try {
       await DatabaseService.deleteImport(id);
       if (selectedImport?.id === id) {
         setSelectedImport(null);
       }
       await loadImports();
+      if (onImportDeleted) {
+        onImportDeleted(id);
+      }
+    } catch (err) {
+      console.error('Failed to delete import record:', err);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -86,7 +100,7 @@ export const ImportHistoryModal: React.FC<ImportHistoryModalProps> = ({
             No biometric files have been imported into the database yet.
           </div>
         ) : (
-          <div className="border border-neutral-200 dark:border-white/10 rounded-2xl overflow-hidden">
+          <div className="border border-neutral-200/90 dark:border-white/10 rounded-2xl overflow-hidden bg-white/80 dark:bg-white/[0.02] shadow-sm ring-1 ring-black/[0.03] dark:ring-white/[0.03]">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
@@ -135,8 +149,14 @@ export const ImportHistoryModal: React.FC<ImportHistoryModalProps> = ({
                           <button
                             type="button"
                             onClick={(e) => handleDelete(imp.id, e)}
-                            className="p-1 rounded-md text-neutral-400 hover:text-red-500 hover:bg-neutral-100 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                            disabled={deletingId === imp.id}
+                            className={`p-1.5 rounded-lg transition-all cursor-pointer ${
+                              deletingId === imp.id
+                                ? 'opacity-40 cursor-not-allowed bg-rose-50 text-rose-400'
+                                : 'text-neutral-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 active:scale-95'
+                            }`}
                             title="Delete record"
+                            aria-label={`Delete record for ${imp.file_name}`}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -153,25 +173,37 @@ export const ImportHistoryModal: React.FC<ImportHistoryModalProps> = ({
         {/* Detail Panel of Selected Import */}
         {selectedImport && (
           <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-neutral-50 dark:bg-white/[0.02] space-y-3 text-xs animate-in fade-in duration-150">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-bold text-neutral-900 dark:text-neutral-100 text-sm">
                 Import Record Details: {selectedImport.file_name}
               </span>
-              {onSelectImportMonth && (
+              <div className="flex items-center gap-2">
                 <Button
-                  variant="primary"
+                  variant="outline"
                   size="sm"
-                  rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
-                  onClick={() => {
-                    const monthKey = selectedImport.date_from.substring(0, 7);
-                    onSelectImportMonth(monthKey);
-                    onClose();
-                  }}
-                  className="text-xs"
+                  leftIcon={<Trash2 className="w-3.5 h-3.5 text-rose-500" />}
+                  onClick={(e) => handleDelete(selectedImport.id, e)}
+                  disabled={deletingId === selectedImport.id}
+                  className="text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 border-rose-200 dark:border-rose-900/30"
                 >
-                  Switch Workspace to {selectedImport.date_from.substring(0, 7)}
+                  {deletingId === selectedImport.id ? 'Deleting...' : 'Delete Record'}
                 </Button>
-              )}
+                {onSelectImportMonth && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
+                    onClick={() => {
+                      const monthKey = selectedImport.date_from.substring(0, 7);
+                      onSelectImportMonth(monthKey);
+                      onClose();
+                    }}
+                    className="text-xs"
+                  >
+                    Switch Workspace to {selectedImport.date_from.substring(0, 7)}
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

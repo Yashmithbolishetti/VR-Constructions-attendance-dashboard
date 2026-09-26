@@ -24,7 +24,12 @@ import {
 } from '../types/database';
 import { parseBiometricFile } from '../services/attendanceParser';
 import { validateBiometricPunches } from '../services/attendanceValidator';
-import { calculateMonthAttendance } from '../services/attendanceCalculator';
+import {
+  calculateMonthAttendance,
+  normalizeDateString,
+  normalizeEnNo,
+  isEnNoMatch,
+} from '../services/attendanceCalculator';
 import { SAMPLE_BIOMETRIC_FILE_NAME, SAMPLE_BIOMETRIC_RAW_TEXT } from '../services/sampleData';
 import { DatabaseService, calculateFileHash } from '../services/database';
 
@@ -305,9 +310,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // 2. Load punches from DatabaseService
+        // 2. Load punches and master employees from DatabaseService
         const punches = await DatabaseService.getAllPunches();
         const storedMonths = await DatabaseService.getAllMonths();
+        const allDbEmps = await DatabaseService.getAllEmployees();
+
+        const empNameMap = new Map<string, string>();
+        allDbEmps.forEach((e) => {
+          if (e.employee_code) empNameMap.set(e.employee_code, e.employee_name);
+        });
 
         if (punches && punches.length > 0) {
           const rawPunches: RawBiometricPunch[] = punches.map((p) => ({
@@ -328,18 +339,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             rawLineSource: p.raw_line_source,
           }));
 
-          const empMap = new Map<string, string>();
           punches.forEach((p) => {
-            if (p.employee_code) empMap.set(p.employee_code, p.employee_name_raw || `Employee ${p.employee_code}`);
+            if (p.employee_code && !empNameMap.has(p.employee_code)) {
+              empNameMap.set(p.employee_code, p.employee_name_raw || `Employee ${p.employee_code}`);
+            }
           });
 
-          // Also merge master employees
-          const allDbEmps = await DatabaseService.getAllEmployees();
-          allDbEmps.forEach((e) => {
-            if (!empMap.has(e.employee_code)) empMap.set(e.employee_code, e.employee_name);
-          });
-
-          const employees: Employee[] = Array.from(empMap.entries()).map(([code, name]) => ({
+          const employees: Employee[] = Array.from(empNameMap.entries()).map(([code, name]) => ({
             employeeId: code,
             name,
             isActive: true,
@@ -402,24 +408,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setParsedDataset(restoredDataset);
         }
 
-        // 3. Load holidays & leaves
-        const monthId = `month-${mKey}`;
-        const dbHols = await DatabaseService.getHolidaysForMonth(monthId);
+        // 3. Load all holidays & leaves across all months with normalized date keys and canonical EnNo names
+        const allDbHols = await DatabaseService.getAllHolidays();
         setHolidays(
-          dbHols.map((h) => ({
+          allDbHols.map((h) => ({
             id: h.id,
-            date: h.holiday_date,
+            date: normalizeDateString(h.holiday_date),
             name: h.holiday_name,
           }))
         );
 
-        const dbLeaves = await DatabaseService.getLeavesForMonth(monthId);
+        const allDbLeaves = await DatabaseService.getAllLeaves();
         setLeaves(
-          dbLeaves.map((l) => ({
+          allDbLeaves.map((l) => ({
             id: l.id,
             employeeId: l.employee_code,
-            employeeName: `Employee ${l.employee_code}`,
-            date: l.leave_date,
+            employeeName:
+              empNameMap.get(l.employee_code) ||
+              empNameMap.get(normalizeEnNo(l.employee_code)) ||
+              `Employee ${l.employee_code}`,
+            date: normalizeDateString(l.leave_date),
             leaveType: l.leave_type as any,
           }))
         );
@@ -717,12 +725,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Holidays for this month
         holidays
-          .filter((h) => h.date.startsWith(mKey))
+          .filter((h) => {
+            const norm = normalizeDateString(h.date);
+            return norm.startsWith(mKey);
+          })
           .forEach((h) => {
+            const normDate = normalizeDateString(h.date);
             holidaysToSave.push({
-              id: h.id || `hol-${mKey}-${h.date}`,
+              id: h.id || `hol-${mKey}-${normDate}`,
               attendance_month_id: monthId,
-              holiday_date: h.date,
+              holiday_date: normDate,
               holiday_name: h.name,
               created_at: nowIso,
             });
@@ -730,14 +742,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Leaves for this month
         leaves
-          .filter((l) => l.date.startsWith(mKey))
+          .filter((l) => {
+            const norm = normalizeDateString(l.date);
+            return norm.startsWith(mKey);
+          })
           .forEach((l) => {
+            const normDate = normalizeDateString(l.date);
             leavesToSave.push({
-              id: l.id || `leave-${l.employeeId}-${l.date}`,
+              id: l.id || `leave-${l.employeeId}-${normDate}`,
               attendance_month_id: monthId,
               employee_id: `emp-${l.employeeId}`,
               employee_code: l.employeeId,
-              leave_date: l.date,
+              leave_date: normDate,
               leave_type: l.leaveType || 'CASUAL',
               created_at: nowIso,
               updated_at: nowIso,
@@ -917,24 +933,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addHoliday = (holiday: Omit<Holiday, 'id'>) => {
+    const normDate = normalizeDateString(holiday.date);
     const id = `hol-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
     const newHol: Holiday = {
       ...holiday,
+      date: normDate,
       id,
     };
     setHolidays((prev) => [...prev, newHol]);
 
     // Persist to relational database
-    const monthId = `month-${holiday.date.substring(0, 7)}`;
+    const monthId = `month-${normDate.substring(0, 7)}`;
     DatabaseService.addHoliday({
       id,
       attendance_month_id: monthId,
-      holiday_date: holiday.date,
+      holiday_date: normDate,
       holiday_name: holiday.name,
       created_at: new Date().toISOString(),
     });
 
-    addToast(`Added company holiday: ${holiday.name} (${holiday.date})`, 'success');
+    addToast(`Added company holiday: ${holiday.name} (${normDate})`, 'success');
   };
 
   const removeHoliday = (id: string) => {
@@ -944,22 +962,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addLeaveRecord = (leave: Omit<LeaveRecord, 'id'>) => {
-    const id = `leave-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    const normDate = normalizeDateString(leave.date);
+    const cleanEmpId = leave.employeeId.trim().replace(/^emp[-_]/i, '');
+    const id = `leave-${cleanEmpId}-${normDate}-${Date.now()}`;
     const newLeave: LeaveRecord = {
       ...leave,
+      employeeId: cleanEmpId,
+      date: normDate,
       id,
     };
-    setLeaves((prev) => [...prev, newLeave]);
+
+    setLeaves((prev) => [
+      ...prev.filter((l) => !(isEnNoMatch(l.employeeId, cleanEmpId) && l.date === normDate)),
+      newLeave,
+    ]);
 
     // Persist to database
-    const monthId = `month-${leave.date.substring(0, 7)}`;
+    const monthId = `month-${normDate.substring(0, 7)}`;
     DatabaseService.addLeavesBatch([
       {
         id,
-        employee_id: `emp-${leave.employeeId}`,
-        employee_code: leave.employeeId,
+        employee_id: `emp-${cleanEmpId}`,
+        employee_code: cleanEmpId,
         attendance_month_id: monthId,
-        leave_date: leave.date,
+        leave_date: normDate,
         leave_type: (leave.leaveType as any) || 'CASUAL',
         notes: undefined,
         created_at: new Date().toISOString(),
@@ -967,7 +993,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       },
     ]);
 
-    addToast(`Registered approved leave for ${leave.employeeName} (${leave.date})`, 'success');
+    addToast(`Registered approved leave for ${leave.employeeName} (${normDate})`, 'success');
   };
 
   const addBatchLeaves = (
@@ -984,21 +1010,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const now = new Date().toISOString();
 
     for (const r of records) {
-      const id = `leave-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-      const monthId = `month-${r.date.substring(0, 7)}`;
+      const normDate = normalizeDateString(r.date);
+      const cleanEmpId = r.employeeId.trim().replace(/^emp[-_]/i, '');
+      const id = `leave-${cleanEmpId}-${normDate}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const monthId = `month-${normDate.substring(0, 7)}`;
+
       newLeaves.push({
         id,
-        employeeId: r.employeeId,
+        employeeId: cleanEmpId,
         employeeName: r.employeeName,
-        date: r.date,
+        date: normDate,
         leaveType: r.leaveType,
       });
+
       dbRecords.push({
         id,
-        employee_id: `emp-${r.employeeId}`,
-        employee_code: r.employeeId,
+        employee_id: `emp-${cleanEmpId}`,
+        employee_code: cleanEmpId,
         attendance_month_id: monthId,
-        leave_date: r.date,
+        leave_date: normDate,
         leave_type: r.leaveType,
         notes: r.notes,
         created_at: now,
@@ -1006,10 +1036,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    setLeaves((prev) => [...prev, ...newLeaves]);
+    setLeaves((prev) => {
+      // Filter out any existing leaves that match the incoming assignments (same employee + date)
+      const filtered = prev.filter(
+        (prevL) =>
+          !records.some(
+            (rec) =>
+              isEnNoMatch(prevL.employeeId, rec.employeeId) &&
+              prevL.date === normalizeDateString(rec.date)
+          )
+      );
+      return [...filtered, ...newLeaves];
+    });
+
     DatabaseService.addLeavesBatch(dbRecords);
     addToast(
-      `Registered ${records.length} leave assignments across selected personnel and dates`,
+      `Registered ${records.length} leave assignment(s) across selected personnel and dates`,
       'success',
       'Batch Leaves Saved'
     );

@@ -4,6 +4,7 @@ import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
 import { HolidayConfig } from '../../types/attendance';
+import { normalizeDateString } from '../../services/attendanceCalculator';
 
 export interface HolidayManagerModalProps {
   isOpen: boolean;
@@ -28,7 +29,12 @@ export const HolidayManagerModal: React.FC<HolidayManagerModalProps> = ({
   const [holidayName, setHolidayName] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
-  const effectiveMonthKey = activeMonthKey || monthKey || '2026-09';
+  const effectiveMonthKey =
+    activeMonthKey && activeMonthKey.includes('-')
+      ? activeMonthKey
+      : monthKey && monthKey.includes('-')
+      ? monthKey
+      : '';
   const defaultDatePrefix = effectiveMonthKey;
 
   const handleAdd = (e: React.FormEvent) => {
@@ -43,10 +49,12 @@ export const HolidayManagerModal: React.FC<HolidayManagerModalProps> = ({
       return;
     }
 
+    const norm = normalizeDateString(holidayDate);
+
     if (onAddHoliday) {
       onAddHoliday({
         id: `hol-${Date.now()}`,
-        date: holidayDate,
+        date: norm,
         name: holidayName.trim(),
       });
     }

@@ -545,7 +545,7 @@ export function askAttendanceAi(
       q.includes('rate') ||
       q.includes('attendance')
     ) {
-      const absPct = emp.absencePercentage ?? Math.max(0, 100 - emp.attendancePercentage);
+      const absPct = emp.absencePercentage;
       return {
         answer: `${emp.employeeName} (EnNo: ${emp.employeeId}) has an Attendance Percentage of ${emp.attendancePercentage}% and an Absence Percentage of ${absPct}% for ${targetMonthData.monthLabel}. Present: ${emp.presentDays} of ${emp.expectedAttendanceDays} expected working days. Absences: ${emp.absentDays} days, Approved Leave: ${emp.approvedLeaveDays} days, Single Punches: ${emp.singlePunchDays + emp.outPendingDays} days, Late Marks: ${emp.lateDays || 0}, Early Departures: ${emp.earlyDepartureDays || 0}, Average Net Shift: ${emp.averageNetHoursFormatted || `${emp.averageNetHours}h`}.`,
         queryIntent: 'employee_percentage',
@@ -589,19 +589,24 @@ export function askAttendanceAi(
     }
 
     if (q.includes('absent') || q.includes('absence') || q.includes('absences')) {
+      const leaveClarification = emp.approvedLeaveDays > 0
+        ? ` (Note: ${emp.employeeName} also had ${emp.approvedLeaveDays} approved leave ${emp.approvedLeaveDays === 1 ? 'day' : 'days'}, which are excluded from absences)`
+        : '';
       const absText =
         emp.absentDays > 0
-          ? `${emp.employeeName} was recorded absent for ${emp.absentDays} ${emp.absentDays === 1 ? 'day' : 'days'} without approved leave in ${targetMonthData.monthLabel}.`
-          : `${emp.employeeName} had 0 unnotified absences in ${targetMonthData.monthLabel}.`;
+          ? `${emp.employeeName} (EnNo: ${emp.employeeId}) was recorded absent for ${emp.absentDays} ${emp.absentDays === 1 ? 'day' : 'days'} in ${targetMonthData.monthLabel}${leaveClarification}.`
+          : `${emp.employeeName} (EnNo: ${emp.employeeId}) had 0 unnotified absences in ${targetMonthData.monthLabel}${leaveClarification}.`;
 
       return {
         answer: absText,
         queryIntent: 'employee_absence',
         sourceBadge,
         facts: [
-          `Absences: ${emp.absentDays} days`,
+          `Unnotified Absences: ${emp.absentDays} days`,
+          `Approved Leaves: ${emp.approvedLeaveDays} days (Excluded from Absences)`,
           `Present: ${emp.presentDays} of ${emp.expectedAttendanceDays} expected days`,
-          `Approved Leave: ${emp.approvedLeaveDays} days`,
+          `Attendance %: ${emp.attendancePercentage}%`,
+          `Absence %: ${emp.absencePercentage}%`,
         ],
         drillDown: {
           label: `Inspect ${emp.employeeName}'s Attendance Record`,
@@ -859,6 +864,38 @@ export function askAttendanceAi(
         label: 'View Working Hours Analytics',
         page: 'analytics',
         params: { tab: 'hours' },
+      },
+    };
+  }
+
+  // 10B. Company-wide / aggregate leave inquiries (e.g. "How many people were on leave?", "Who was on leave?")
+  if (
+    q.includes('people were on leave') ||
+    q.includes('employees were on leave') ||
+    q.includes('who was on leave') ||
+    q.includes('who took leave') ||
+    (q.includes('leave') && (q.includes('how many') || q.includes('who') || q.includes('total') || q.includes('count')))
+  ) {
+    const onLeaveEmployees = employees.filter((e) => e.approvedLeaveDays > 0);
+    const totalLeaveDays = onLeaveEmployees.reduce((acc, e) => acc + e.approvedLeaveDays, 0);
+    const leaveNames = onLeaveEmployees.map((e) => `${e.employeeName} (${e.approvedLeaveDays}d)`).join(', ');
+
+    return {
+      answer:
+        onLeaveEmployees.length > 0
+          ? `In ${targetMonthData.monthLabel}, ${onLeaveEmployees.length} ${onLeaveEmployees.length === 1 ? 'employee was' : 'employees were'} on approved leave (${totalLeaveDays} total leave days): ${leaveNames}. Approved leave is excluded from absent calculations and never converts to absence.`
+          : `In ${targetMonthData.monthLabel}, 0 employees were on leave. All ${employees.length} employees had 0 approved leave days.`,
+      queryIntent: 'company_leave',
+      sourceBadge: `Based on verified attendance data · ${targetMonthData.monthLabel}`,
+      facts: [
+        `Period: ${targetMonthData.monthLabel}`,
+        `Employees on Approved Leave: ${onLeaveEmployees.length}`,
+        `Total Approved Leave Days: ${totalLeaveDays}`,
+        ...onLeaveEmployees.map((e) => `${e.employeeName} (EnNo: ${e.employeeId}): ${e.approvedLeaveDays} approved leave days`),
+      ],
+      drillDown: {
+        label: 'View Employees on Leave',
+        page: 'employees',
       },
     };
   }

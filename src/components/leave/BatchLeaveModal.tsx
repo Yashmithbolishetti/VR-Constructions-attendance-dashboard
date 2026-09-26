@@ -14,6 +14,7 @@ import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
 import { LeaveType } from '../../types/attendance';
+import { normalizeDateString, isEnNoMatch } from '../../services/attendanceCalculator';
 
 export interface BatchLeaveModalProps {
   isOpen: boolean;
@@ -56,11 +57,16 @@ export const BatchLeaveModal: React.FC<BatchLeaveModalProps> = ({
   const [leaveType, setLeaveType] = useState<LeaveType>('CASUAL');
   const [notes, setNotes] = useState('');
 
-  const effectiveMonthKey = activeMonthKey || monthKey || '2026-09';
+  const effectiveMonthKey =
+    activeMonthKey && activeMonthKey.includes('-')
+      ? activeMonthKey
+      : monthKey && monthKey.includes('-')
+      ? monthKey
+      : '2026-08';
 
   // Calendar dates for the active month
   const monthDates = useMemo(() => {
-    if (!effectiveMonthKey) return [];
+    if (!effectiveMonthKey || !effectiveMonthKey.includes('-')) return [];
     const [yearStr, monthStr] = effectiveMonthKey.split('-');
     const year = parseInt(yearStr, 10);
     const month = parseInt(monthStr, 10);
@@ -76,7 +82,7 @@ export const BatchLeaveModal: React.FC<BatchLeaveModalProps> = ({
       dates.push({ dateStr, dayNum, dayOfWeek, isSunday });
     }
     return dates;
-  }, [activeMonthKey]);
+  }, [effectiveMonthKey]);
 
   // Filtered employees
   const filteredEmployees = useMemo(() => {
@@ -127,13 +133,13 @@ export const BatchLeaveModal: React.FC<BatchLeaveModalProps> = ({
     }[] = [];
 
     for (const empId of selectedEmpIds) {
-      const emp = employees.find((x) => x.employeeId === empId);
+      const emp = employees.find((x) => x.employeeId === empId || isEnNoMatch(x.employeeId, empId));
       const name = emp ? emp.name : `Employee ${empId}`;
       for (const d of selectedDates) {
         records.push({
           employeeId: empId,
           employeeName: name,
-          date: d,
+          date: normalizeDateString(d),
           leaveType,
           notes: notes.trim() || undefined,
         });

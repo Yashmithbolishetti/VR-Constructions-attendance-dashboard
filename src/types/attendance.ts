@@ -31,6 +31,7 @@ export type ExceptionCategory =
   | 'NEEDS_REVIEW'
   | 'LEAVE_CONFLICT'
   | 'HOLIDAY_WORKED'
+  | 'SUNDAY_WORKED'
   | 'ANOMALY';
 
 export type LeaveType = 'CASUAL' | 'SICK' | 'PERSONAL' | 'EARNED' | 'OTHER';
@@ -182,7 +183,8 @@ export interface EmployeeAttendanceSummary {
   employeeId: string;
   employeeName: string;
   department?: string;
-  expectedAttendanceDays: number; // Eligible working days in actual dataset (excluding Sun, Hol, outside dates)
+  expectedAttendanceDays: number; // Expected working days for employee = eligibleWorkingDays - approvedLeaveDays
+  eligibleWorkingDays: number; // Working days in dataset period (excluding Sundays, Holidays, and outside dates)
   presentDays: number;
   approvedLeaveDays: number;
   absentDays: number;

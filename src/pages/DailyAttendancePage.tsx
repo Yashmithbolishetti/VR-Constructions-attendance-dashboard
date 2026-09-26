@@ -126,10 +126,40 @@ export const DailyAttendancePage: React.FC = () => {
           </div>
         );
       case 'APPROVED_LEAVE':
+        if (item.punchCount > 0) {
+          return (
+            <div className="flex flex-col items-end gap-0.5">
+              <Badge variant="info">Approved Leave</Badge>
+              <span className="text-[10px] font-mono text-sky-500 font-semibold">
+                Worked on Leave
+              </span>
+            </div>
+          );
+        }
         return <Badge variant="info">Approved Leave</Badge>;
       case 'HOLIDAY':
+        if (item.punchCount > 0) {
+          return (
+            <div className="flex flex-col items-end gap-0.5">
+              <Badge variant="warning">Holiday + Attendance</Badge>
+              <span className="text-[10px] font-mono text-amber-500 font-semibold">
+                Worked on Holiday
+              </span>
+            </div>
+          );
+        }
         return <Badge variant="warning">Holiday</Badge>;
       case 'SUNDAY':
+        if (item.punchCount > 0) {
+          return (
+            <div className="flex flex-col items-end gap-0.5">
+              <Badge variant="neutral">Sunday + Attendance</Badge>
+              <span className="text-[10px] font-mono text-purple-400 font-semibold">
+                Worked on Sunday
+              </span>
+            </div>
+          );
+        }
         return <Badge variant="neutral">Sunday</Badge>;
       case 'SINGLE_PUNCH':
         return <Badge variant="warning">Single Punch</Badge>;

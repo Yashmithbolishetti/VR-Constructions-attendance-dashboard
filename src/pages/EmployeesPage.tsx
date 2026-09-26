@@ -11,6 +11,8 @@ import {
   UserX,
   FileText,
   Briefcase,
+  Bug,
+  PlusCircle,
 } from 'lucide-react';
 import { PageContainer } from '../components/layout/PageContainer';
 import { PageHeader } from '../components/layout/PageHeader';
@@ -21,8 +23,11 @@ import { Badge } from '../components/common/Badge';
 import { DataTable, Column } from '../components/common/DataTable';
 import { Modal } from '../components/common/Modal';
 import { MonthSelector } from '../components/common/MonthSelector';
+import { BatchLeaveModal } from '../components/leave/BatchLeaveModal';
+import { AttendanceDebugInspector } from '../components/attendance/AttendanceDebugInspector';
 import { useApp } from '../context/AppContext';
 import { EmployeeAttendanceSummary, AttendanceDay } from '../types/attendance';
+import { isEnNoMatch } from '../services/attendanceCalculator';
 
 export const EmployeesPage: React.FC = () => {
   const {
@@ -37,7 +42,14 @@ export const EmployeesPage: React.FC = () => {
     employeeSearchQuery,
     setEmployeeSearchQuery,
     setActiveMonthKey,
+    selectedMonthKey,
+    activeMonthKey,
+    addBatchLeaves,
   } = useApp();
+
+  const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
+  const [showGlobalInspector, setShowGlobalInspector] = useState(false);
+  const [inspectDate, setInspectDate] = useState<string>('');
 
   const filters = [
     { id: 'all', label: 'All Personnel' },
@@ -53,9 +65,10 @@ export const EmployeesPage: React.FC = () => {
   const filteredEmployees = React.useMemo(() => {
     return employeesList.filter((emp) => {
       if (employeeSearchQuery.trim()) {
-        const q = employeeSearchQuery.toLowerCase();
+        const q = employeeSearchQuery.toLowerCase().trim();
         const matchesName = emp.employeeName.toLowerCase().includes(q);
-        const matchesId = emp.employeeId.toLowerCase().includes(q);
+        const matchesId =
+          emp.employeeId.toLowerCase().includes(q) || isEnNoMatch(emp.employeeId, q);
         if (!matchesName && !matchesId) return false;
       }
 
@@ -79,10 +92,14 @@ export const EmployeesPage: React.FC = () => {
   const selectedProfile = React.useMemo(() => {
     if (!selectedEmployeeIdForProfile || !calculatedData) return null;
     const summary = calculatedData.employeeSummaries.find(
-      (e) => e.employeeId === selectedEmployeeIdForProfile
+      (e) =>
+        e.employeeId === selectedEmployeeIdForProfile ||
+        isEnNoMatch(e.employeeId, selectedEmployeeIdForProfile)
     );
     const dailyRecords = calculatedData.dailyRecords.filter(
-      (d) => d.employeeId === selectedEmployeeIdForProfile
+      (d) =>
+        d.employeeId === selectedEmployeeIdForProfile ||
+        isEnNoMatch(d.employeeId, selectedEmployeeIdForProfile)
     );
     return { summary, dailyRecords };
   }, [selectedEmployeeIdForProfile, calculatedData]);
@@ -145,7 +162,7 @@ export const EmployeesPage: React.FC = () => {
               : 'text-neutral-400'
           }`}
         >
-          {emp.absencePercentage ?? Math.max(0, 100 - emp.attendancePercentage)}%
+          {emp.absencePercentage}%
         </span>
       ),
     },
@@ -263,6 +280,24 @@ export const EmployeesPage: React.FC = () => {
         actions={
           <div className="flex items-center gap-2.5">
             <MonthSelector />
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<UserCheck className="w-4 h-4 text-sky-500" />}
+              onClick={() => setIsLeaveModalOpen(true)}
+              className="text-xs"
+            >
+              Register Approved Leave
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Bug className="w-4 h-4 text-amber-500" />}
+              onClick={() => setShowGlobalInspector((v) => !v)}
+              className="text-xs"
+            >
+              {showGlobalInspector ? 'Hide Inspector' : 'Engine Inspector'}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -420,7 +455,7 @@ export const EmployeesPage: React.FC = () => {
               <div className="p-3 rounded-xl bg-neutral-50 dark:bg-white/[0.02] border border-neutral-200 dark:border-white/5">
                 <span className="text-[10px] text-neutral-400 block font-medium">Absence %</span>
                 <span className="text-base font-bold font-mono text-rose-500">
-                  {selectedProfile.summary.absencePercentage ?? Math.max(0, 100 - selectedProfile.summary.attendancePercentage)}%
+                  {selectedProfile.summary.absencePercentage}%
                 </span>
               </div>
               <div className="p-3 rounded-xl bg-neutral-50 dark:bg-white/[0.02] border border-neutral-200 dark:border-white/5">

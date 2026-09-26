@@ -80,10 +80,106 @@ export function getCalendarDatesForMonth(monthKey: string): string[] {
 }
 
 /**
+ * Robust date string normalizer.
+ * Supports:
+ * - YYYY-MM-DD
+ * - YYYY/MM/DD, YYYY.MM.DD
+ * - DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
+ * - Timestamps (e.g., "2026/08/25 09:36:56" or ISO strings)
+ */
+export function normalizeDateString(dateStr: string): string {
+  if (!dateStr) return '';
+  const clean = String(dateStr).trim();
+  if (!clean) return '';
+
+  // If already standard ISO date YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    return clean;
+  }
+
+  // If timestamp like 2026/08/25 09:36:56 or 2026-08-25T09:36:56 or 25/08/2026 09:36:56
+  const timeMatch = clean.match(/^(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})[\sT]/);
+  const dateCandidate = timeMatch ? timeMatch[1] : clean;
+
+  // Pattern 1: YYYY[-/.]MM[-/.]DD
+  const ymd = dateCandidate.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (ymd) {
+    const y = ymd[1];
+    const m = ymd[2].padStart(2, '0');
+    const d = ymd[3].padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // Pattern 2: DD[-/.]MM[-/.]YYYY
+  const dmy = dateCandidate.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (dmy) {
+    let p1 = parseInt(dmy[1], 10);
+    let p2 = parseInt(dmy[2], 10);
+    const y = dmy[3];
+    let d: string;
+    let m: string;
+    if (p1 > 12) {
+      d = String(p1).padStart(2, '0');
+      m = String(p2).padStart(2, '0');
+    } else if (p2 > 12) {
+      m = String(p1).padStart(2, '0');
+      d = String(p2).padStart(2, '0');
+    } else {
+      // In DD/MM/YYYY format, p1 is day and p2 is month (standard in India / UK)
+      d = String(p1).padStart(2, '0');
+      m = String(p2).padStart(2, '0');
+    }
+    return `${y}-${m}-${d}`;
+  }
+
+  // Fallback: Date.parse on full clean string (supports "27 August 2026", "25 Aug 2026", etc.)
+  const parsed = Date.parse(clean);
+  if (!isNaN(parsed)) {
+    const dt = new Date(parsed);
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return clean;
+}
+
+/**
+ * Normalizes EnNo (Employee Enrollment Number) for comparison.
+ * Strips leading zeros for numeric IDs (e.g., "000000008" -> "8")
+ * and converts to lowercase for alphanumeric strings. Strips any "emp-" prefix.
+ */
+export function normalizeEnNo(enNo: string): string {
+  if (!enNo) return '';
+  const clean = String(enNo).trim().replace(/^emp[-_]/i, '');
+  if (/^\d+$/.test(clean)) {
+    return String(parseInt(clean, 10));
+  }
+  return clean.toLowerCase();
+}
+
+/**
+ * Determines whether two employee IDs/EnNos match, handling leading zero differences
+ * (e.g. "000000008" and "8") and prefix differences (e.g. "emp-000000008").
+ */
+export function isEnNoMatch(id1?: string, id2?: string): boolean {
+  if (!id1 || !id2) return false;
+  const c1 = String(id1).trim().replace(/^emp[-_]/i, '');
+  const c2 = String(id2).trim().replace(/^emp[-_]/i, '');
+  if (c1 === c2) return true;
+  if (/^\d+$/.test(c1) && /^\d+$/.test(c2)) {
+    return parseInt(c1, 10) === parseInt(c2, 10);
+  }
+  return c1.toLowerCase() === c2.toLowerCase();
+}
+
+/**
  * Checks if a YYYY-MM-DD date is a Sunday
  */
 export function isDateSunday(dateStr: string): boolean {
-  const [y, m, d] = dateStr.split('-').map(Number);
+  const norm = normalizeDateString(dateStr);
+  const [y, m, d] = norm.split('-').map(Number);
   const dateObj = new Date(y, m - 1, d);
   return dateObj.getDay() === 0;
 }
@@ -146,11 +242,14 @@ export function calculateMonthAttendance(
 
   // 2. Determine calendar boundaries of monthKey or handle OVERALL / COMBINED period
   const isCombined =
+    !monthKey ||
     monthKey === 'ALL' ||
     monthKey === 'COMBINED' ||
     monthKey === 'YEARLY' ||
     monthKey === 'OVERALL' ||
-    monthKey === 'Overall';
+    monthKey === 'Overall' ||
+    monthKey.toLowerCase() === 'all' ||
+    monthKey.toLowerCase() === 'overall';
   
   let allMonthDates: string[] = [];
   let monthStartDate = datasetStartDate;
@@ -194,11 +293,13 @@ export function calculateMonthAttendance(
     reportDate = dataset.reportDate;
   }
 
-  // Map of holiday dates for fast lookup
+  // Map of holiday dates for fast lookup with normalized dates (Requirement #5)
   const holidayDateMap = new Map<string, string>();
   holidays.forEach((h) => {
-    if (isCombined || h.date.startsWith(monthKey)) {
-      holidayDateMap.set(h.date, h.name);
+    if (!h.date) return;
+    const normDate = normalizeDateString(h.date);
+    if (isCombined || normDate.startsWith(monthKey)) {
+      holidayDateMap.set(normDate, h.name || 'Holiday');
     }
   });
 
@@ -207,9 +308,10 @@ export function calculateMonthAttendance(
   let holidaysCount = 0;
 
   allMonthDates.forEach((dateStr) => {
-    if (isDateSunday(dateStr)) {
+    const norm = normalizeDateString(dateStr);
+    if (isDateSunday(norm)) {
       sundaysCount++;
-    } else if (holidayDateMap.has(dateStr)) {
+    } else if (holidayDateMap.has(norm)) {
       holidaysCount++;
     }
   });
@@ -217,22 +319,45 @@ export function calculateMonthAttendance(
   // Company expected working days in the analyzed period
   const expectedWorkingDays = Math.max(0, allMonthDates.length - sundaysCount - holidaysCount);
 
-  // Group valid punches by employeeId and date
+  // Helper to add punch to lookup with multiple keys
+  const addToPunchLookup = (k: string, p: RawBiometricPunch) => {
+    if (!punchLookup.has(k)) punchLookup.set(k, []);
+    punchLookup.get(k)!.push(p);
+  };
+
+  // Group valid punches by employeeId and normalized date (Requirement #4)
   const punchLookup = new Map<string, RawBiometricPunch[]>();
   dataset.validPunches.forEach((p) => {
     if (!p.date || !p.enNo) return;
-    const key = `${p.enNo}|${p.date}`;
-    if (!punchLookup.has(key)) {
-      punchLookup.set(key, []);
-    }
-    punchLookup.get(key)!.push(p);
+    const normDate = normalizeDateString(p.date);
+    const rawEnNo = p.enNo.trim();
+    const normEnNo = normalizeEnNo(rawEnNo);
+    const paddedEnNo = /^\d+$/.test(normEnNo) ? normEnNo.padStart(9, '0') : rawEnNo;
+
+    addToPunchLookup(`${rawEnNo}|${normDate}`, p);
+    if (normEnNo !== rawEnNo) addToPunchLookup(`${normEnNo}|${normDate}`, p);
+    if (paddedEnNo !== rawEnNo) addToPunchLookup(`${paddedEnNo}|${normDate}`, p);
+    if (/^\d+$/.test(rawEnNo)) addToPunchLookup(`${parseInt(rawEnNo, 10)}|${normDate}`, p);
   });
 
-  // Map employee leaves: employeeId|date -> LeaveRecord
+  // Map employee leaves: indexed by raw employeeId|date, normalized EnNo|date, and padded EnNo|date (Requirement #3 & #4)
   const leaveMap = new Map<string, LeaveRecord>();
   leaves.forEach((l) => {
-    if (isCombined || l.date.startsWith(monthKey)) {
-      leaveMap.set(`${l.employeeId}|${l.date}`, l);
+    if (!l.employeeId || !l.date) return;
+    const normDate = normalizeDateString(l.date);
+    if (isCombined || normDate.startsWith(monthKey)) {
+      const rawId = l.employeeId.trim();
+      const normId = normalizeEnNo(rawId);
+      const paddedId = /^\d+$/.test(normId) ? normId.padStart(9, '0') : rawId;
+
+      leaveMap.set(`${rawId}|${normDate}`, l);
+      leaveMap.set(`${normId}|${normDate}`, l);
+      leaveMap.set(`${paddedId}|${normDate}`, l);
+      if (/^\d+$/.test(rawId)) {
+        leaveMap.set(`${parseInt(rawId, 10)}|${normDate}`, l);
+      }
+      leaveMap.set(`emp-${rawId}|${normDate}`, l);
+      leaveMap.set(`emp-${normId}|${normDate}`, l);
     }
   });
 
@@ -318,15 +443,32 @@ export function calculateMonthAttendance(
     let employeeLeaveOnWorkingDays = 0;
 
     for (const dateStr of allMonthDates) {
-      const isSunday = isDateSunday(dateStr);
-      const isHoliday = holidayDateMap.has(dateStr);
-      const isPastOrToday = dateStr <= reportDate;
-      const leaveKey = `${emp.employeeId}|${dateStr}`;
-      const leaveRecord = leaveMap.get(leaveKey);
+      const normDateStr = normalizeDateString(dateStr);
+      const isSunday = isDateSunday(normDateStr);
+      const isHoliday = holidayDateMap.has(normDateStr);
+
+      // Leave check with canonical EnNo variants and normalized Date (Requirement #2, #3, #4)
+      const empIdRaw = emp.employeeId.trim();
+      const normEmpEnNo = normalizeEnNo(empIdRaw);
+      const paddedEmpEnNo = /^\d+$/.test(normEmpEnNo) ? normEmpEnNo.padStart(9, '0') : empIdRaw;
+      const unpaddedEmpEnNo = /^\d+$/.test(normEmpEnNo) ? String(parseInt(normEmpEnNo, 10)) : normEmpEnNo;
+
+      const leaveRecord =
+        leaveMap.get(`${empIdRaw}|${normDateStr}`) ||
+        leaveMap.get(`${normEmpEnNo}|${normDateStr}`) ||
+        leaveMap.get(`${paddedEmpEnNo}|${normDateStr}`) ||
+        leaveMap.get(`${unpaddedEmpEnNo}|${normDateStr}`) ||
+        leaveMap.get(`emp-${empIdRaw}|${normDateStr}`) ||
+        leaveMap.get(`emp-${normEmpEnNo}|${normDateStr}`);
       const hasLeave = !!leaveRecord;
 
-      const punchKey = `${emp.employeeId}|${dateStr}`;
-      const rawDayPunches = punchLookup.get(punchKey) || [];
+      // Punch lookup with all EnNo variants and normalized Date
+      const rawDayPunches =
+        punchLookup.get(`${empIdRaw}|${normDateStr}`) ||
+        punchLookup.get(`${normEmpEnNo}|${normDateStr}`) ||
+        punchLookup.get(`${paddedEmpEnNo}|${normDateStr}`) ||
+        punchLookup.get(`${unpaddedEmpEnNo}|${normDateStr}`) ||
+        [];
 
       // Sort punches chronologically by time
       const dayPunches = [...rawDayPunches].sort((a, b) => a.time.localeCompare(b.time));
@@ -345,47 +487,20 @@ export function calculateMonthAttendance(
       let earlyMinutes = 0;
       const dayExceptions: AttendanceException[] = [];
 
-      // Check Conflict 1: Leave + Punch Conflict
-      if (hasLeave && punchCount > 0) {
-        const exc: AttendanceException = {
-          id: `exc-leave-conflict-${emp.employeeId}-${dateStr}`,
-          employeeId: emp.employeeId,
-          employeeName: emp.name,
-          date: dateStr,
-          category: 'LEAVE_CONFLICT',
-          severity: 'high',
-          title: 'Leave + Attendance Conflict',
-          description: `Employee has an approved leave registered on ${dateStr}, but recorded ${punchCount} biometric punch(es). Requires HR review.`,
-          punches: dayPunches,
-        };
-        dayExceptions.push(exc);
-        exceptions.push(exc);
-        empExceptionsCount++;
-      }
+      // DAILY STATUS PRIORITY (Requirement #8)
+      // 1. Sunday -> Sunday / Non-working day
+      // 2. Configured Holiday -> Holiday
+      // 3. Approved Leave -> Leave
+      // 4. Valid biometric punches -> Present / Single Punch / relevant exception
+      // 5. No punch and working day -> Absent
 
-      // Check Conflict 2: Holiday Worked
-      if (isHoliday && punchCount > 0) {
-        const exc: AttendanceException = {
-          id: `exc-holiday-worked-${emp.employeeId}-${dateStr}`,
-          employeeId: emp.employeeId,
-          employeeName: emp.name,
-          date: dateStr,
-          category: 'HOLIDAY_WORKED',
-          severity: 'low',
-          title: 'Holiday Attendance Recorded',
-          description: `Employee recorded biometric punches on official holiday (${holidayDateMap.get(dateStr)}). Validated for compensatory credit.`,
-          punches: dayPunches,
-        };
-        dayExceptions.push(exc);
-        exceptions.push(exc);
-      }
-
-      // Determine Status & Calculations
       if (isSunday) {
         status = 'SUNDAY';
         sundayDays++;
-        if (punchCount >= 2) {
+        if (punchCount >= 1) {
           firstPunchIn = dayPunches[0].time;
+        }
+        if (punchCount >= 2) {
           lastPunchOut = dayPunches[dayPunches.length - 1].time;
           const inMin = parseTimeToMinutes(firstPunchIn);
           const outMin = parseTimeToMinutes(lastPunchOut);
@@ -393,12 +508,30 @@ export function calculateMonthAttendance(
           grossHours = Math.round((grossMinutes / 60) * 100) / 100;
           netMinutes = Math.max(0, grossMinutes - lunchDeductionMin);
           netHours = Math.round((netMinutes / 60) * 100) / 100;
+        }
+        if (punchCount > 0) {
+          const exc: AttendanceException = {
+            id: `exc-sun-worked-${emp.employeeId}-${normDateStr}`,
+            employeeId: emp.employeeId,
+            employeeName: emp.name,
+            date: normDateStr,
+            category: 'SUNDAY_WORKED',
+            severity: 'low',
+            title: 'Sunday Attendance Recorded',
+            description: `Employee recorded ${punchCount} biometric punch(es) on Sunday. Work hours tracked for compensatory rest / overtime.`,
+            punches: dayPunches,
+          };
+          dayExceptions.push(exc);
+          exceptions.push(exc);
         }
       } else if (isHoliday) {
         status = 'HOLIDAY';
         holidayDays++;
-        if (punchCount >= 2) {
+        const holidayName = holidayDateMap.get(normDateStr) || 'Holiday';
+        if (punchCount >= 1) {
           firstPunchIn = dayPunches[0].time;
+        }
+        if (punchCount >= 2) {
           lastPunchOut = dayPunches[dayPunches.length - 1].time;
           const inMin = parseTimeToMinutes(firstPunchIn);
           const outMin = parseTimeToMinutes(lastPunchOut);
@@ -407,10 +540,54 @@ export function calculateMonthAttendance(
           netMinutes = Math.max(0, grossMinutes - lunchDeductionMin);
           netHours = Math.round((netMinutes / 60) * 100) / 100;
         }
+        if (punchCount > 0) {
+          const exc: AttendanceException = {
+            id: `exc-holiday-worked-${emp.employeeId}-${normDateStr}`,
+            employeeId: emp.employeeId,
+            employeeName: emp.name,
+            date: normDateStr,
+            category: 'HOLIDAY_WORKED',
+            severity: 'low',
+            title: 'Holiday Attendance Recorded',
+            description: `Employee recorded biometric punches on official holiday (${holidayName}). Preserved as Holiday + Attendance for compensatory credit.`,
+            punches: dayPunches,
+          };
+          dayExceptions.push(exc);
+          exceptions.push(exc);
+        }
       } else if (hasLeave) {
+        // APPROVED LEAVE MUST NEVER BECOME ABSENT (Requirement #2)
         status = 'APPROVED_LEAVE';
         approvedLeaveDays++;
         employeeLeaveOnWorkingDays++;
+        if (punchCount >= 1) {
+          firstPunchIn = dayPunches[0].time;
+        }
+        if (punchCount >= 2) {
+          lastPunchOut = dayPunches[dayPunches.length - 1].time;
+          const inMin = parseTimeToMinutes(firstPunchIn);
+          const outMin = parseTimeToMinutes(lastPunchOut);
+          grossMinutes = Math.max(0, outMin - inMin);
+          grossHours = Math.round((grossMinutes / 60) * 100) / 100;
+          netMinutes = Math.max(0, grossMinutes - lunchDeductionMin);
+          netHours = Math.round((netMinutes / 60) * 100) / 100;
+        }
+        if (punchCount > 0) {
+          const exc: AttendanceException = {
+            id: `exc-leave-conflict-${emp.employeeId}-${normDateStr}`,
+            employeeId: emp.employeeId,
+            employeeName: emp.name,
+            date: normDateStr,
+            category: 'LEAVE_CONFLICT',
+            severity: 'medium',
+            title: 'Leave + Attendance Conflict',
+            description: `Employee has an approved leave registered on ${normDateStr}, but recorded ${punchCount} biometric punch(es). Preserved as approved leave with punch activity.`,
+            punches: dayPunches,
+          };
+          dayExceptions.push(exc);
+          exceptions.push(exc);
+          empExceptionsCount++;
+        }
       } else {
         // Normal company working day inside dataset range
         if (punchCount === 0) {
@@ -418,10 +595,10 @@ export function calculateMonthAttendance(
           absentDays++;
 
           const exc: AttendanceException = {
-            id: `exc-abs-${emp.employeeId}-${dateStr}`,
+            id: `exc-abs-${emp.employeeId}-${normDateStr}`,
             employeeId: emp.employeeId,
             employeeName: emp.name,
-            date: dateStr,
+            date: normDateStr,
             category: 'ABSENT',
             severity: 'medium',
             title: 'Unnotified Absence',
@@ -442,10 +619,10 @@ export function calculateMonthAttendance(
             lateArrivalsCount++;
 
             const exc: AttendanceException = {
-              id: `exc-late-${emp.employeeId}-${dateStr}`,
+              id: `exc-late-${emp.employeeId}-${normDateStr}`,
               employeeId: emp.employeeId,
               employeeName: emp.name,
-              date: dateStr,
+              date: normDateStr,
               category: 'LATE_ARRIVAL',
               severity: 'low',
               title: 'Late Arrival',
@@ -457,15 +634,15 @@ export function calculateMonthAttendance(
           }
 
           // If this is the latest date in the dataset, mark OUT_PENDING (today's active shift)
-          if (dateStr === reportDate) {
+          if (normDateStr === reportDate) {
             status = 'OUT_PENDING';
             outPendingDays++;
 
             const exc: AttendanceException = {
-              id: `exc-out-pending-${emp.employeeId}-${dateStr}`,
+              id: `exc-out-pending-${emp.employeeId}-${normDateStr}`,
               employeeId: emp.employeeId,
               employeeName: emp.name,
-              date: dateStr,
+              date: normDateStr,
               category: 'OUT_PENDING',
               severity: 'low',
               title: 'Checkout Pending (Current Day)',
@@ -479,14 +656,14 @@ export function calculateMonthAttendance(
             singlePunchDays++;
 
             const exc: AttendanceException = {
-              id: `exc-single-${emp.employeeId}-${dateStr}`,
+              id: `exc-single-${emp.employeeId}-${normDateStr}`,
               employeeId: emp.employeeId,
               employeeName: emp.name,
-              date: dateStr,
+              date: normDateStr,
               category: 'SINGLE_PUNCH',
               severity: 'medium',
               title: 'Single Punch (Missing IN or OUT)',
-              description: `Only 1 punch recorded (${firstPunchIn}) on ${dateStr}. Working hours cannot be determined without pairing.`,
+              description: `Only 1 punch recorded (${firstPunchIn}) on ${normDateStr}. Working hours cannot be determined without pairing.`,
               punches: dayPunches,
             };
             dayExceptions.push(exc);
@@ -522,10 +699,10 @@ export function calculateMonthAttendance(
             lateArrivalsCount++;
 
             const exc: AttendanceException = {
-              id: `exc-late-${emp.employeeId}-${dateStr}`,
+              id: `exc-late-${emp.employeeId}-${normDateStr}`,
               employeeId: emp.employeeId,
               employeeName: emp.name,
-              date: dateStr,
+              date: normDateStr,
               category: 'LATE_ARRIVAL',
               severity: 'low',
               title: 'Late Arrival',
@@ -543,10 +720,10 @@ export function calculateMonthAttendance(
             earlyDeparturesCount++;
 
             const exc: AttendanceException = {
-              id: `exc-early-dep-${emp.employeeId}-${dateStr}`,
+              id: `exc-early-dep-${emp.employeeId}-${normDateStr}`,
               employeeId: emp.employeeId,
               employeeName: emp.name,
-              date: dateStr,
+              date: normDateStr,
               category: 'EARLY_DEPARTURE',
               severity: 'low',
               title: 'Early Departure',
@@ -560,8 +737,8 @@ export function calculateMonthAttendance(
       }
 
       dailyRecords.push({
-        id: `att-${emp.employeeId}-${dateStr}`,
-        date: dateStr,
+        id: `att-${emp.employeeId}-${normDateStr}`,
+        date: normDateStr,
         employeeId: emp.employeeId,
         employeeName: emp.name,
         firstPunchIn,
@@ -583,20 +760,29 @@ export function calculateMonthAttendance(
       });
     }
 
-    // Requirement #12: Employee Expected Days = Working Days − Approved Leave Days
-    const expectedAttendanceDays = Math.max(0, expectedWorkingDays - employeeLeaveOnWorkingDays);
+    // Requirement #8, #9, #10: Deterministic Attendance & Absence Percentages
+    // Eligible Working Days = Working Days in actual dataset period (excluding Sundays & Holidays)
+    const eligibleWorkingDays = expectedWorkingDays;
+    // Expected Attendance Days for Employee = Eligible Working Days - Approved Leave Days (strictly on working days)
+    const expectedAttendanceDays = Math.max(0, eligibleWorkingDays - employeeLeaveOnWorkingDays);
 
-    // Requirement #23: Attendance Percentage = Present Days ÷ Expected Attendance Days × 100
-    const attendancePercentage =
-      expectedAttendanceDays > 0
-        ? Math.round((presentDays / expectedAttendanceDays) * 1000) / 10
-        : 0;
+    let attendancePercentage = 0;
+    let absencePercentage = 0;
 
-    // Requirement #3: Absence Percentage = Absent Days ÷ Expected Attendance Days × 100
-    const absencePercentage =
-      expectedAttendanceDays > 0
-        ? Math.round((absentDays / expectedAttendanceDays) * 1000) / 10
-        : 0;
+    if (expectedAttendanceDays > 0) {
+      attendancePercentage = Math.round((presentDays / expectedAttendanceDays) * 1000) / 10;
+      absencePercentage = Math.round((absentDays / expectedAttendanceDays) * 1000) / 10;
+
+      // When working days are partitioned into present and absent days: Attendance % + Absence % = 100%
+      if (presentDays + absentDays === expectedAttendanceDays) {
+        attendancePercentage = Math.round((presentDays / expectedAttendanceDays) * 1000) / 10;
+        absencePercentage = Math.round((100 - attendancePercentage) * 10) / 10;
+      }
+    } else {
+      // Zero denominator case (Requirement #10): expectedAttendanceDays === 0 -> 0% (UI will display N/A)
+      attendancePercentage = 0;
+      absencePercentage = 0;
+    }
 
     const averageNetMinutes =
       presentDays > 0 ? Math.round(totalNetMinutes / presentDays) : 0;
@@ -611,6 +797,7 @@ export function calculateMonthAttendance(
     employeeSummaries.push({
       employeeId: emp.employeeId,
       employeeName: emp.name,
+      eligibleWorkingDays,
       expectedAttendanceDays,
       presentDays,
       approvedLeaveDays,

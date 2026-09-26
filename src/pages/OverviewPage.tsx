@@ -69,6 +69,7 @@ export const OverviewPage: React.FC = () => {
     navigateToExceptions,
     navigateToEmployees,
     navigateToDailyAttendance,
+    setActiveMonthKey,
   } = useApp();
 
   const [activeChartTab, setActiveChartTab] = useState<'attendance' | 'hours'>('attendance');
